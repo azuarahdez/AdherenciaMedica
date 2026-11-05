@@ -2,7 +2,7 @@
 import flet as ft
 
 from adherencia import instrumentos as ins
-from adherencia.almacenamiento import guardar
+from adherencia.base_datos import guardar_encuesta
 from movil import ui
 
 
@@ -48,7 +48,7 @@ def numero(campo):
 def registrar(app, resultado, respuestas):
     app.resultados[resultado.codigo] = resultado
     if not app.demo:
-        guardar(app.paciente, resultado, respuestas)
+        guardar_encuesta(app.paciente, resultado, respuestas)
     app.avisar(f"{resultado.instrumento}: guardado ✅")
     app.ir("menu")
 

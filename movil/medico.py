@@ -1,9 +1,8 @@
 """Pantallas del personal de salud: pacientes, detalle, alertas y modelo FCM."""
-from datetime import datetime
-
 import flet as ft
 import flet.canvas as cv
 
+from adherencia import base_datos as bd
 from adherencia import datos_demo as demo
 from movil import paciente, ui
 
@@ -13,17 +12,20 @@ ENTRADAS = [c for ents in demo.GRUPOS.values() for c in ents if c not in demo.ES
 
 
 def alertas(app, id_paciente=None):
-    """[(clave, id, nombre, nivel, texto, cuando)]: primero los síntomas que reportaron los
-    pacientes desde su app (el más reciente arriba), luego las del expediente."""
-    lista = [(f"R{len(app.reportes) - i}", r["id"], r["nombre"], r["nivel"], r["texto"],
-              r["cuando"]) for i, r in enumerate(app.reportes)]
+    """[(clave, id, nombre, nivel, texto, cuando)]: primero lo que reportaron los pacientes
+    desde su app (el más reciente arriba), luego las del expediente."""
+    lista = [(r["clave"], r["id"], r["nombre"], r["nivel"], r["texto"], r["cuando"])
+             for r in app.reportes]
+    lista += [(a["clave"], a["id"], a["nombre"], a["nivel"], a["texto"], a["cuando"])
+              for a in bd.alertas()]
     lista += [(f"{p['id']}-{texto}", p["id"], p["nombre"], nivel, texto, cuando)
               for p in demo.PACIENTES for nivel, texto, cuando in p["alertas"]]
     return [a for a in lista if id_paciente in (None, a[1])]
 
 
 def _pendientes(app, id_paciente=None):
-    return [a for a in alertas(app, id_paciente) if a[0] not in app.atendidas]
+    atendidas = bd.atendidas()
+    return [a for a in alertas(app, id_paciente) if a[0] not in atendidas]
 
 
 def _kpis(app):
@@ -41,6 +43,33 @@ def _kpis(app):
         controles.append(ui.boton(f"{pendientes} alertas sin atender", lambda: app.ir("m_alertas"),
                                   ft.Icons.NOTIFICATIONS_ACTIVE, principal=True))
     return controles
+
+
+def aviso_alertas(app):
+    """Al entrar al panel: si hay alertas sin atender, lo dice y lleva a la sección Alertas."""
+    pendientes = _pendientes(app)
+    if not pendientes:
+        return
+    altas = sum(nivel == "alta" for _, _, _, nivel, _, _ in pendientes)
+    n = len(pendientes)
+
+    def ver():
+        app.page.pop_dialog()
+        app.ir("m_alertas")
+
+    app.page.show_dialog(ft.AlertDialog(
+        icon=ft.Icon(ft.Icons.NOTIFICATIONS_ACTIVE, color=ui.ROJO, size=40),
+        title=ft.Text(f"Tienes {n} {'alerta' if n == 1 else 'alertas'}",
+                      text_align=ft.TextAlign.CENTER),
+        content=ft.Column([
+            ui.texto("Puedes revisarlas en la sección Alertas.", 16,
+                     text_align=ft.TextAlign.CENTER),
+            *([ui.chip(f"{altas} de prioridad alta", "bad")] if altas else []),
+        ], tight=True, spacing=10, horizontal_alignment=ft.CrossAxisAlignment.CENTER, width=300),
+        actions=[ft.TextButton("Después", on_click=lambda e: app.page.pop_dialog()),
+                 ft.FilledButton("Ver alertas", icon=ft.Icons.NOTIFICATIONS,
+                                 on_click=lambda e: ver())],
+        actions_alignment=ft.MainAxisAlignment.CENTER))
 
 
 def _tarjeta_paciente(app, p):
@@ -64,6 +93,9 @@ def _tarjeta_paciente(app, p):
                       spacing=4, horizontal_alignment=ft.CrossAxisAlignment.END),
         ], vertical_alignment=ft.CrossAxisAlignment.START),
         ui.barra(p["c28"], color),
+        ft.Row([ui.sub("Últimos 7 días", 11), ft.Container(
+            ui.mini_barras([v for _, v in demo.tomas_ultimos_dias(p)]), expand=True)],
+            spacing=10, vertical_alignment=ft.CrossAxisAlignment.END),
     ], on_click=lambda: abrir())
 
 
@@ -95,11 +127,33 @@ def pagina_panel(app):
                             on_change=lambda e: al_cambiar("texto", e.control.value))
     return [ui.titulo("Mis pacientes", "Ordenados del que más atención necesita al que menos. "
                                        "Toca uno para ver su ficha."),
-            *_kpis(app), buscador, filtro, lista]
+            *_kpis(app), buscador, filtro, lista, *_registrados(app)]
+
+
+def _registrados(app):
+    """Pacientes que entraron con su folio y contestaron encuestas en este dispositivo."""
+    registrados = bd.pacientes_registrados()
+    if not registrados:
+        return []
+
+    def abrir(folio):
+        app.paciente_sel = folio
+        app.ir("m_detalle")
+
+    filas = [ft.Container(ui.fila(
+        ft.Column([ui.texto(f"Folio {folio}", negrita=True),
+                   ui.sub(f"Última encuesta: {bd.cuando(ultima)}")], spacing=0),
+        ui.chip(f"{n}/9 encuestas", "ok" if n == 9 else "info"), divisor=False),
+        on_click=lambda e, f=folio: abrir(f), ink=True, border_radius=8)
+        for folio, n, ultima in registrados]
+    return [ui.texto("📱 Usan la app en este dispositivo", 16, negrita=True),
+            ui.tarjeta(filas)]
 
 
 def pagina_detalle(app):
-    p = next(x for x in demo.PACIENTES if x["id"] == app.paciente_sel)
+    p = next((x for x in demo.PACIENTES if x["id"] == app.paciente_sel), None)
+    if p is None:
+        return _detalle_registrado(app, app.paciente_sel)
     color = ui.COLOR_ETIQUETA[p["etiqueta"]]
     controles = [ui.tarjeta(ft.Row([
         ui.anillo(p["c28"], f"{p['c28']:.2f}", "C28", color,
@@ -124,10 +178,14 @@ def pagina_detalle(app):
     ], "🔍 Lo que más puede mejorar" if p["etiqueta"] == "Bueno"
         else f"🔍 ¿Por qué está en {p['etiqueta']}?"))
 
-    if p["id"] == "P2":  # Josefina usa la app: se ven sus tomas por día y su ánimo
-        dias = demo.adherencia_ultimos_dias()
-        controles.append(ui.tarjeta(ui.barras_v([v for _, v in dias], [d for d, _ in dias]),
-                                    "💊 Tomas de los últimos 7 días"))
+    dias = demo.tomas_ultimos_dias(p)
+    tomadas = sum(round(v * len(demo.HORARIOS) / 100) for _, v in dias)
+    controles.append(ui.tarjeta([
+        ui.sub(f"Tomó {tomadas} de {7 * len(demo.HORARIOS)} dosis "
+               f"({100 * tomadas / (7 * len(demo.HORARIOS)):.0f}%)."),
+        ui.barras_v([v for _, v in dias], [d for d, _ in dias], caritas=False),
+    ], "💊 Tomas de los últimos 7 días"))
+    if p["id"] == "P2":  # Josefina usa la app: también se ve su ánimo
         controles.append(ui.tarjeta(_animo_paciente(app, p["id"]), "💭 Ánimo de esta semana"))
 
     finales = [(f"C{c} · {demo.CONCEPTOS[c]}", p["valores"][c], c) for c in (24, 25, 26, 27)]
@@ -149,7 +207,8 @@ def pagina_detalle(app):
         bgcolor=ft.Colors.WHITE, border=ft.Border.all(1, ui.BORDE), border_radius=16))
 
     semanas = p["semanas"]
-    controles.append(ui.tarjeta(ui.barras_v(semanas, [f"S{i + 1}" for i in range(len(semanas))]),
+    controles.append(ui.tarjeta(ui.barras_v(semanas, [f"S{i + 1}" for i in range(len(semanas))],
+                                            caritas=False),
                                 "Adherencia semanal (pastillero)"))
     controles.append(_notas(app, p["id"]))
     controles.append(ft.Row([
@@ -180,8 +239,37 @@ def _animo_paciente(app, id_paciente):
     return controles
 
 
+def _detalle_registrado(app, folio):
+    """Ficha de un paciente con folio: sus encuestas guardadas, alertas, ánimo y notas."""
+    resultados = bd.ultimos_resultados(folio)
+    animo = bd.animo_de_hoy(folio)
+    controles = [ui.tarjeta([
+        ui.texto(f"Folio {folio}", 18, negrita=True),
+        ui.sub(f"{len(resultados)} de 9 encuestas contestadas"),
+        ft.Row([ui.texto("Ánimo de hoy:"),
+                ft.Text(paciente.ANIMOS[animo][0], size=24) if animo is not None
+                else ui.sub("sin registrar")]),
+    ])]
+    for _, _, _, nivel, texto, cuando in _pendientes(app, folio):
+        etiqueta, _ = SEVERIDAD[nivel]
+        controles.append(ui.aviso(f"**Alerta {etiqueta.lower()}** · {texto} · {cuando}"))
+    if resultados:
+        items = [(r.instrumento, r.valor_fcm, r.codigo)
+                 for r in sorted(resultados.values(), key=lambda r: int(r.codigo[1:]))]
+        # En olvido, salud mental y efectos secundarios un valor alto es desfavorable.
+        controles.append(ui.tarjeta(ui.barras_h(items, inversos={"C3", "C4", "C7"}),
+                                    "🧩 Resultados de sus encuestas"))
+    tomas = bd.tomas_ultimos_dias(folio)
+    if any(n for _, n in tomas):
+        pcts = [round(100 * n / len(demo.HORARIOS)) for _, n in tomas]
+        controles.append(ui.tarjeta(ui.barras_v(pcts, [f[8:] for f, _ in tomas], caritas=False),
+                                    "💊 Tomas registradas, últimos 7 días"))
+    controles.append(_notas(app, folio))
+    return controles
+
+
 def _notas(app, id_paciente):
-    notas = app.notas.setdefault(id_paciente, [])
+    notas = bd.notas(id_paciente)
     campo = ft.TextField(hint_text="Ej. Llamar el lunes para revisar horarios", multiline=True,
                          min_lines=1, max_lines=4, bgcolor=ft.Colors.WHITE, border_radius=12)
 
@@ -189,7 +277,7 @@ def _notas(app, id_paciente):
         if not (campo.value or "").strip():
             app.avisar("Escribe la nota.", error=True)
             return
-        notas.insert(0, (f"{datetime.now():%d/%m %H:%M}", campo.value.strip()))
+        bd.agregar_nota(id_paciente, campo.value.strip())
         app.avisar("Nota guardada")
         app.dibujar()
 
@@ -204,17 +292,18 @@ def pagina_alertas(app):
     controles = [ui.titulo("Alertas", "Requieren atención del personal de salud.")]
 
     def atender(clave):
-        app.atendidas.add(clave)
+        bd.marcar_atendida(clave)
         app.dibujar()
 
     def abrir(id_paciente):
         app.paciente_sel = id_paciente
         app.ir("m_detalle")
 
-    ids = {p["id"] for p in demo.PACIENTES}
+    ids = {p["id"] for p in demo.PACIENTES} | {f for f, _, _ in bd.pacientes_registrados()}
+    atendidas = bd.atendidas()
     for clave, id_paciente, nombre, nivel, texto, cuando in alertas(app):
         etiqueta, tipo = SEVERIDAD[nivel]
-        atendida = clave in app.atendidas
+        atendida = clave in atendidas
         contenido = [ui.fila(ft.Column([ui.texto(texto, negrita=True),
                                         ui.sub(f"{nombre} · {cuando}")], spacing=0, expand=True),
                              ui.chip("Atendida", "ok") if atendida else ui.chip(etiqueta, tipo),

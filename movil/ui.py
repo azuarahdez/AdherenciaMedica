@@ -1,5 +1,8 @@
 """Piezas visuales nativas (tarjetas, anillos, barras, chips) con controles de Flet."""
+import math
+
 import flet as ft
+import flet.canvas as cv
 
 VERDE, AMBAR, ROJO, TEAL = "#2e9d5b", "#d48a0c", "#c94040", "#0f8a8a"
 TEAL_OSCURO, TEXTO, GRIS, BORDE, FONDO = "#0f6e6e", "#1f2933", "#6b7a86", "#e1ecec", "#f5f8f8"
@@ -148,18 +151,56 @@ def barras_h(items, inversos=()):
         for et, v, clave in items], spacing=12)
 
 
-def barras_v(valores, etiquetas, sufijo="%", alto=110):
-    """Columnas verticales con su carita encima; valores en 0–100."""
+def barras_v(valores, etiquetas, sufijo="%", alto=110, caritas=True):
+    """Columnas verticales; valores en 0–100. Sin `caritas` (vista del médico) es una gráfica
+    plana: solo el porcentaje encima de cada barra."""
     return ft.Row([
-        ft.Column([ft.Text(carita_pct(v), size=20, text_align=ft.TextAlign.CENTER),
-                   texto(f"{v:.0f}{sufijo}", 11, text_align=ft.TextAlign.CENTER),
+        ft.Column(([ft.Text(carita_pct(v), size=20, text_align=ft.TextAlign.CENTER)]
+                   if caritas else []) +
+                  [texto(f"{v:.0f}{sufijo}", 11, text_align=ft.TextAlign.CENTER),
                    ft.Container(height=alto * v / 100, bgcolor=color_pct(v),
                                 border_radius=ft.BorderRadius.only(top_left=6, top_right=6)),
                    sub(e, 11, text_align=ft.TextAlign.CENTER)],
                   expand=True, spacing=2, alignment=ft.MainAxisAlignment.END,
                   horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
-        for v, e in zip(valores, etiquetas)], spacing=6, height=alto + 68,
+        for v, e in zip(valores, etiquetas)], spacing=6, height=alto + (68 if caritas else 42),
         vertical_alignment=ft.CrossAxisAlignment.END)
+
+
+def mini_barras(valores, alto=26):
+    """Siete barritas para ver de un vistazo la semana de un paciente en la lista del médico."""
+    return ft.Row([ft.Container(height=max(3, alto * v / 100), bgcolor=color_pct(v), expand=True,
+                                border_radius=3) for v in valores],
+                  spacing=3, height=alto, vertical_alignment=ft.CrossAxisAlignment.END)
+
+
+def pastel(segmentos, tam=190):
+    """Gráfica de pastel con una carita en cada rebanada.
+
+    segmentos: [(cantidad, color, carita)]; las rebanadas en 0 no se dibujan.
+    """
+    total = sum(n for n, _, _ in segmentos) or 1
+    centro, radio = tam / 2, tam / 2
+    formas, inicio = [], -math.pi / 2  # se empieza arriba, a las 12
+    for n, color, carita in segmentos:
+        if not n:
+            continue
+        barrido = 2 * math.pi * n / total
+        formas.append(cv.Arc(0, 0, tam, tam, inicio, barrido, use_center=True,
+                             paint=ft.Paint(color=color)))
+        if n < total:  # línea blanca entre rebanadas
+            formas.append(cv.Arc(0, 0, tam, tam, inicio, barrido, use_center=True,
+                                 paint=ft.Paint(color=ft.Colors.WHITE, stroke_width=3,
+                                                style=ft.PaintingStyle.STROKE)))
+        medio = inicio + barrido / 2
+        distancia = 0 if n == total else radio * 0.58
+        formas.append(cv.Text(centro + distancia * math.cos(medio),
+                              centro + distancia * math.sin(medio), carita,
+                              ft.TextStyle(size=30 if n == total else 26),
+                              alignment=ft.Alignment.CENTER))
+        inicio += barrido
+    return ft.Row([cv.Canvas(formas, width=tam, height=tam)],
+                  alignment=ft.MainAxisAlignment.CENTER)
 
 
 def aviso(contenido, tipo="bad", icono=ft.Icons.WARNING_AMBER_ROUNDED):

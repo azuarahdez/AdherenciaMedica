@@ -3,6 +3,7 @@ import asyncio
 
 import flet as ft
 
+from adherencia import base_datos as bd
 from adherencia import instrumentos as ins
 from movil import encuestas, medico, paciente
 from movil import ui
@@ -43,12 +44,11 @@ class App:
         page.theme = ft.Theme(color_scheme_seed=ui.TEAL)
         page.on_view_pop = lambda e: self.ir(PADRE.get(self.pagina, self.pagina))
         self._base = None  # vista raíz "/" (ver dibujar)
-        # Lo que el paciente comparte con su equipo de salud; sobrevive a "Salir" para que el
-        # personal de salud lo vea al entrar en el mismo dispositivo.
-        self.reportes = []  # síntomas reportados: dict(id, nombre, texto, nivel, cuando)
-        self.animos = {}    # id de paciente → índice de paciente.ANIMOS elegido hoy
-        self.notas = {}     # id de paciente → [(fecha, nota)] del personal de salud
-        self.atendidas = set()  # claves de medico.alertas() ya atendidas
+        # Los pacientes con folio guardan todo en la base de datos (adherencia/base_datos.py).
+        # El paciente de ejemplo no se guarda: lo que reporta vive aquí y sobrevive a "Salir"
+        # para que el personal de salud lo vea en el mismo dispositivo.
+        self.reportes = []  # síntomas del paciente de ejemplo: dict(clave, id, nombre, ...)
+        self.animos = {}    # "P2" → índice de paciente.ANIMOS elegido hoy por el ejemplo
         self.reiniciar()
 
     # ------------------------------------------------------------- estado
@@ -159,10 +159,18 @@ class App:
         self.resultados = {r.codigo: r for r in ejemplo}
         self.entrar_paciente()
 
+    def entrar_con_folio(self, folio):
+        """Recupera de la base de datos lo que el paciente ya contestó en este dispositivo."""
+        self.rol, self.paciente = "paciente", folio
+        self.resultados = bd.ultimos_resultados(folio)
+        self.animo = bd.animo_de_hoy(folio)
+        self.entrar_paciente()
+
     def entrar_paciente(self):
-        """Abre Inicio y, encima, la pregunta de cómo se siente hoy."""
+        """Abre Inicio y, encima, la pregunta de cómo se siente hoy si aún no la contesta."""
         self.ir("p_inicio")
-        self.despues(lambda: paciente.encuesta_animo(self))
+        if self.animo is None:
+            self.despues(lambda: paciente.encuesta_animo(self))
 
 
 def pagina_entrada(app):
@@ -177,12 +185,12 @@ def pagina_entrada(app):
         elif not acepta.value:
             app.avisar("Necesitamos tu consentimiento para continuar.", error=True)
         else:
-            app.rol, app.paciente = "paciente", folio.value.strip()
-            app.entrar_paciente()
+            app.entrar_con_folio(folio.value.strip())
 
     def entrar_medico():
         app.rol, app.paciente = "medico", "Dra. López"
         app.ir("m_panel")
+        app.despues(lambda: medico.aviso_alertas(app))
 
     formulario_paciente = ft.Column([
         folio,

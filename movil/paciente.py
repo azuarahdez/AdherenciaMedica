@@ -1,8 +1,10 @@
 """Pantallas del paciente: inicio, pastillero, asistente y progreso."""
 from datetime import date, datetime, timedelta
+from uuid import uuid4
 
 import flet as ft
 
+from adherencia import base_datos as bd
 from adherencia import datos_demo as demo
 from movil import ui
 
@@ -24,7 +26,15 @@ def proxima_cita():
 def tomadas(app):
     if app.tomadas is None:
         app.tomadas = {h for h, _, est, _ in demo.DOSIS_HOY if est == "tomada"}
+        if not app.demo:
+            app.tomadas |= bd.tomas_de_hoy(app.paciente)
     return app.tomadas
+
+
+def anotar_toma(app, hora):
+    tomadas(app).add(hora)
+    if not app.demo:
+        bd.registrar_toma(app.paciente, hora)
 
 
 def proxima_dosis(app):
@@ -32,7 +42,7 @@ def proxima_dosis(app):
 
 
 def registrar_toma(app, hora):
-    tomadas(app).add(hora)
+    anotar_toma(app, hora)
     app.avisar(f"Toma de las {hora} registrada ✅")
     app.dibujar()
 
@@ -65,7 +75,11 @@ ANIMOS = [  # (emoji, etiqueta, título de la frase, frase al elegirlo)
 
 def elegir_animo(app, indice):
     """Guarda el ánimo y muestra una frase de acompañamiento según la carita elegida."""
-    app.animo = app.animos[app.id_paciente()] = indice
+    app.animo = indice
+    if app.demo:
+        app.animos[app.id_paciente()] = indice
+    else:
+        bd.guardar_animo(app.paciente, indice)
     app.page.pop_dialog()
     app.dibujar()
     emoji, _, titulo_frase, frase = ANIMOS[indice]
@@ -138,11 +152,14 @@ def reportar_sintoma(app):
             app.avisar("Elige qué sientes.", error=True)
             return
         n = elegido["intensidad"]
-        app.reportes.insert(0, {
-            "id": app.id_paciente(), "nombre": app.nombre or f"Folio {app.paciente}",
-            "texto": f"Síntoma: {elegido['sintoma'].lower()} ({INTENSIDADES[n - 1].lower()}, {n}/5)",
-            "nivel": "alta" if n >= 4 else "media",
-            "cuando": f"hoy {datetime.now():%H:%M}"})
+        texto = f"Síntoma: {elegido['sintoma'].lower()} ({INTENSIDADES[n - 1].lower()}, {n}/5)"
+        nivel_alerta = "alta" if n >= 4 else "media"
+        if app.demo:
+            app.reportes.insert(0, {"clave": f"R{uuid4().hex[:8]}", "id": app.id_paciente(),
+                                    "nombre": app.nombre, "texto": texto, "nivel": nivel_alerta,
+                                    "cuando": f"hoy {datetime.now():%H:%M}"})
+        else:
+            bd.agregar_alerta(app.paciente, None, nivel_alerta, texto)
         app.page.pop_dialog()
         app.avisar("Listo, tu equipo de salud ya lo puede ver 🩺")
 
@@ -309,7 +326,7 @@ def pagina_asistente(app):
         if not mensaje:
             return
         if mensaje == demo.RESPUESTAS_RAPIDAS[0] and proxima_dosis(app):
-            tomadas(app).add(proxima_dosis(app)[0])
+            anotar_toma(app, proxima_dosis(app)[0])
         app.chat.append(("user", mensaje))
         app.chat.append(("assistant", demo.responder(mensaje, proxima_cita())))
         app.dibujar()
@@ -347,6 +364,31 @@ def animo_semana(app):
     return controles
 
 
+# Rebanadas del pastel: (dosis tomadas en el día, carita, color, texto de la leyenda)
+TIPOS_DIA = [(3, "😄", ui.VERDE, "Tomaste todas tus dosis"),
+             (2, "😐", ui.AMBAR, "Te faltó una dosis"),
+             (0, "😟", ui.ROJO, "Te faltaron 2 o más")]
+
+
+def tipo_dia(pct):
+    tomadas = round(pct * len(demo.HORARIOS) / 100)
+    return next(i for i, (minimo, *_) in enumerate(TIPOS_DIA) if tomadas >= minimo)
+
+
+def pastel_dias(dias):
+    """Pastel de los últimos 7 días agrupados por cuántas dosis se tomaron cada día."""
+    cuenta = [0] * len(TIPOS_DIA)
+    for _, pct in dias:
+        cuenta[tipo_dia(pct)] += 1
+    leyenda = [ft.Row([ft.Container(width=12, height=12, border_radius=6, bgcolor=color),
+                       ft.Text(carita, size=18), ft.Container(ui.texto(texto, 14), expand=True),
+                       ui.texto(f"{n} {'día' if n == 1 else 'días'}", 14, negrita=True)],
+                      spacing=8)
+               for n, (_, carita, color, texto) in zip(cuenta, TIPOS_DIA)]
+    return [ui.pastel([(n, color, carita) for n, (_, carita, color, _) in zip(cuenta, TIPOS_DIA)]),
+            ft.Column(leyenda, spacing=6)]
+
+
 def pagina_progreso(app):
     semanas = demo.SEMANAS_PACIENTE
     esta_semana = semanas[-1]
@@ -357,8 +399,7 @@ def pagina_progreso(app):
                                     f"La semana pasada: {semanas[-2]}% {ui.carita_pct(semanas[-2])}",
                                     text_align=ft.TextAlign.CENTER)],
                             "😊 ¿Cómo va tu adherencia?"),
-                 ui.tarjeta(ui.barras_v([v for _, v in dias], [d for d, _ in dias]),
-                            "📈 Adherencia de los últimos 7 días"),
+                 ui.tarjeta(pastel_dias(dias), "📅 Tus últimos 7 días"),
                  ui.tarjeta(animo_semana(app), "💭 Tu ánimo esta semana")]
     if app.resultados:
         items = [(r.instrumento, r.valor_fcm, r.codigo)
