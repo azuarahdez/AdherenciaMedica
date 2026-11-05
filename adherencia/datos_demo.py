@@ -124,6 +124,32 @@ def adherencia_ultimos_dias():
     return dias[-7:]
 
 
+# Días en que faltan tomas cuando se reparte el porcentaje semanal de un paciente (orden fijo,
+# no aleatorio, para que su gráfica sea siempre la misma).
+_ORDEN_FALTAS = [5, 2, 6, 0, 3, 1, 4]
+
+
+def tomas_ultimos_dias(p):
+    """(día, % de dosis tomadas) de los últimos 7 días de un paciente del panel.
+
+    Josefina (P2) usa el registro del pastillero; a los demás se les reparten las dosis
+    de su última semana (`semanas[-1]` % de 21) sobre los 7 días.
+    """
+    if p["id"] == "P2":
+        return adherencia_ultimos_dias()
+    por_dia = [len(HORARIOS)] * 7
+    faltan = 21 - round(p["semanas"][-1] * 21 / 100)
+    i = 0
+    while faltan > 0:
+        dia = _ORDEN_FALTAS[i % 7]
+        if por_dia[dia]:
+            por_dia[dia] -= 1
+            faltan -= 1
+        i += 1
+    etiquetas = [d for d, _ in adherencia_ultimos_dias()]
+    return [(d, round(100 * n / len(HORARIOS))) for d, n in zip(etiquetas, por_dia)]
+
+
 def _normalizar(texto):
     sin_acentos = unicodedata.normalize("NFD", texto.lower())
     return "".join(c for c in sin_acentos if unicodedata.category(c) != "Mn")
